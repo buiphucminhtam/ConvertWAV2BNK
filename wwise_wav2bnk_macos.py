@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Wwise Batch WAV → BNK Converter (CLI-only, macOS Edition)
-Version: 1.3 — Auto Wine Args + Persistent Config + Realtime Logging
+Wwise Batch WAV → BNK Converter (CLI-only, macOS WineDirect Edition)
+Version: 1.5 — Fully fixed for Wwise 2024.1.8 on macOS (Wine)
 Author: Game Engineer Leader Assistant
 """
 
@@ -59,11 +59,27 @@ class Worker:
         self.logger.write(f"📁 Import JSON created: {tmp_json}")
         return str(tmp_json)
 
-    def run_cli(self, args, desc):
-        # Nếu là bản Wine, thêm "--args" nếu chưa có
-        if "Wwise.app/Contents/Tools/WwiseConsole.sh" in self.console and "--args" not in args:
-            args.insert(1, "--args")
+    def build_args(self, operation, *extra):
+   
+        if "Wwise.app" in self.console and self.console.endswith(".sh"):
+            root = Path(self.console).parents[3]
+            found = list(root.glob("**/winewrapper.exe"))
+            if not found:
+                self.logger.write("❌ Cannot find winewrapper.exe in Wwise.app")
+                return []
+            winewrap = str(found[0])
+            wwise_exe = "c:/Program Files/Audiokinetic/Wwise 2024.1.8.8898/Authoring/x64/Release/bin/WwiseConsole.exe"
+            proj_win = "Z:" + self.project
+            return [
+                winewrap,
+                "--enable-alt-loader", "macdrv", "--wait-children", "--run", "--",
+                wwise_exe, proj_win, operation, *extra
+            ]
 
+        # Native
+        return [self.console, self.project, operation, *extra]
+
+    def run_cli(self, args, desc):
         self.logger.write(f"▶️ {desc}")
         try:
             process = subprocess.Popen(
@@ -84,9 +100,8 @@ class Worker:
             self.logger.write(f"❌ Error running {desc}: {e}")
 
     def run(self):
-        # Validation
         if not os.path.exists(self.console):
-            self.logger.write("❌ Invalid WwiseConsole.sh path.")
+            self.logger.write("❌ Invalid WwiseConsole path.")
             return
         if not os.path.exists(self.project):
             self.logger.write("❌ Invalid project file.")
@@ -97,15 +112,13 @@ class Worker:
 
         json_path = self.generate_import_json()
 
-        # Import
-        self.run_cli(
-            ["bash", self.console, self.project, "tab-delimited-import", "-import-file", json_path],
-            "Running Wwise Console import..."
-        )
+        # Step 1: Import audio files
+        args = self.build_args("tab-delimited-import", "-import-file", json_path)
+        self.run_cli(args, "Running Wwise Console import...")
 
-        # Generate SoundBanks
+        # Step 2: Generate SoundBanks for selected platforms
         for plat in self.platforms:
-            args = ["bash", self.console, self.project, "generate-soundbank", "-platform", plat]
+            args = self.build_args("generate-soundbank", "-platform", plat)
             if self.output_dir:
                 args += ["-outdir", self.output_dir]
             self.run_cli(args, f"Generating SoundBank for {plat}...")
@@ -117,7 +130,7 @@ class Worker:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Wwise Batch WAV → BNK Converter (CLI-only, macOS Edition)")
+        self.title("Wwise Batch WAV → BNK Converter (macOS WineDirect Edition)")
         self.geometry("960x640")
 
         self.console = tk.StringVar()
@@ -129,7 +142,6 @@ class App(tk.Tk):
         self._load_config()
         self._build_ui()
 
-    # ---------- CONFIG SAVE/LOAD ----------
     def _load_config(self):
         try:
             if CONFIG_PATH.exists():
@@ -154,7 +166,6 @@ class App(tk.Tk):
         except Exception as e:
             print("⚠️ Cannot save config:", e)
 
-    # ---------- UI ----------
     def _build_ui(self):
         main = ttk.Frame(self)
         main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -189,7 +200,6 @@ class App(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---------- HANDLERS ----------
     def _browse_file(self, var):
         f = filedialog.askopenfilename()
         if f:
