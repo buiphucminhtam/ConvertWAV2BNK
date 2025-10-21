@@ -60,6 +60,25 @@ class Logger:
         else:
             print(line)
 
+
+def discover_windows_console():
+    """Try to locate WwiseConsole.exe in common Program Files locations and return the newest match.
+    Returns full path or None.
+    """
+    import glob
+    candidates = []
+    # Common installation roots
+    roots = [r"C:\Program Files\Audiokinetic", r"C:\Program Files (x86)\Audiokinetic", r"C:\Program Files\Audiokinetic\Wwise*"]
+    for root in roots:
+        pattern = os.path.join(root, "**", "WwiseConsole.exe")
+        for p in glob.glob(pattern, recursive=True):
+            candidates.append(p)
+    if not candidates:
+        return None
+    # prefer newest by mtime
+    candidates = sorted(candidates, key=lambda p: os.path.getmtime(p), reverse=True)
+    return candidates[0]
+
 # --- Worker ---
 class WwiseBatchWorker:
     def __init__(self, console, project, language, soundbank, object_root, wavs, platforms, output_dir, create_events, event_pattern, auto_bankname, ci_mode, logger):
@@ -139,7 +158,14 @@ class WwiseBatchWorker:
             self.logger.write(f"WAAPI connection failed: {e}")
 
     def _run(self, cmd):
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # On Windows, hide console windows when running WwiseConsole
+        creationflags = 0
+        if sys.platform.startswith('win'):
+            try:
+                creationflags = subprocess.CREATE_NO_WINDOW
+            except Exception:
+                creationflags = 0
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=creationflags)
         for line in proc.stdout:
             self.logger.write(line.strip())
         return proc.wait()
@@ -254,11 +280,39 @@ class GUI(tk.Tk):
 # --- Entry ---
 def main():
     if len(sys.argv)>1 and '--ci' in sys.argv:
-        parser=argparse.ArgumentParser(); parser.add_argument('--ci',action='store_true'); parser.add_argument('--console'); parser.add_argument('--project'); parser.add_argument('--input'); parser.add_argument('--output'); parser.add_argument('--platforms',nargs='+',default=DEFAULT_PLATFORMS); parser.add_argument('--soundbank',default='AutoBank'); parser.add_argument('--language',default=DEFAULT_LANGUAGE); parser.add_argument('--object-root',default=DEFAULT_OBJECT_ROOT); parser.add_argument('--event-pattern',default=DEFAULT_EVENT_PATTERN); parser.add_argument('--create-events',action='store_true'); args=parser.parse_args();
-        wavs=[os.path.join(r,f) for r,_,fs in os.walk(args.input) for f in fs if f.lower().endswith('.wav')]
-        logpath=os.path.join(args.output or Path(args.project).parent,'WwiseBatchLog_CI.txt'); logger=Logger(None,logpath)
-        w=WwiseBatchWorker(args.console,args.project,args.language,args.soundbank,args.object_root,wavs,args.platforms,args.output,args.create_events,args.event_pattern,True,True,logger)
-        sys.exit(0 if w.run() else 1)
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--ci', action='store_true')
+        parser.add_argument('--console')
+        parser.add_argument('--project')
+        parser.add_argument('--input')
+        parser.add_argument('--output')
+        parser.add_argument('--platforms', nargs='+', default=DEFAULT_PLATFORMS)
+        parser.add_argument('--soundbank', default='AutoBank')
+        parser.add_argument('--language', default=DEFAULT_LANGUAGE)
+        parser.add_argument('--object-root', default=DEFAULT_OBJECT_ROOT)
+        parser.add_argument('--event-pattern', default=DEFAULT_EVENT_PATTERN)
+        parser.add_argument('--create-events', action='store_true')
+        args = parser.parse_args()
+
+        # Console autodiscovery on Windows if not provided
+        console = args.console
+        if not console and sys.platform.startswith('win'):
+            console = discover_windows_console()
+
+        if not console or not os.path.isfile(console):
+            print('ERROR: Cannot find valid WwiseConsole.exe. Please provide --console or install Wwise.')
+            sys.exit(2)
+
+        wavs = [os.path.join(r, f) for r, _, fs in os.walk(args.input) for f in fs if f.lower().endswith('.wav')]
+        if not wavs:
+            print('ERROR: No WAV files found in input')
+            sys.exit(3)
+
+        logpath = os.path.join(args.output or Path(args.project).parent, 'WwiseBatchLog_CI.txt')
+        logger = Logger(None, logpath)
+        w = WwiseBatchWorker(console, args.project, args.language, args.soundbank, args.object_root, wavs, args.platforms, args.output, args.create_events, args.event_pattern, True, logger)
+        ok = w.run()
+        sys.exit(0 if ok else 1)
     else:
         GUI().mainloop()
 
